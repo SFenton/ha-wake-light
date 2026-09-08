@@ -1,0 +1,41 @@
+{
+  "state": "ready",
+  "schema_version": 2,
+  "provider": "sleepypod",
+  "alarm_day_semantics": "execution",
+  "ts": 1788703200000,
+  "left": {},
+  "right": {
+    "sunday": {
+      "power": { "off": "09:00" },
+      "alarms": [
+        { "id": 101, "time": "07:00", "enabled": true, "alarmTemperature": 82, "duration": 180, "vibrationIntensity": 100, "vibrationPattern": "rise" },
+        { "id": 102, "time": "07:00", "enabled": true, "alarmTemperature": 82, "duration": 180, "vibrationIntensity": 100, "vibrationPattern": "rise" }
+      ]
+    },
+    "monday": {
+      "power": { "off": "09:00" },
+      "alarms": [
+        { "id": 103, "time": "07:00", "enabled": true, "alarmTemperature": 82, "duration": 180, "vibrationIntensity": 100, "vibrationPattern": "rise" }
+      ]
+    },
+    "tuesday": {
+      "power": { "off": "09:00" },
+      "alarms": [
+        { "id": 104, "time": "07:00", "enabled": true, "alarmTemperature": 82, "duration": 180, "vibrationIntensity": 100, "vibrationPattern": "rise" }
+      ]
+    },
+    "wednesday": {
+      "power": { "off": "09:00" },
+      "alarms": [
+        { "id": 105, "time": "07:00", "enabled": true, "alarmTemperature": 82, "duration": 180, "vibrationIntensity": 100, "vibrationPattern": "rise" }
+      ]
+    },
+    "thursday": {
+      "power": { "off": "09:00" },
+      "alarms": [
+        { "id": 106, "time": "07:00", "enabled": true, "alarmTemperature": 82, "duration": 180, "vibrationIntensity": 100, "vibrationPattern": "rise" }
+      ]
+    }
+  }
+}

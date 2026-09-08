@@ -1,0 +1,73 @@
+{
+  "title": "Wake Light",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Set up a wake-light room",
+        "description": "Setup requires one explicit root light, explicit leaf targets, a fail-closed vacation entity, and a Presence Based Lighting control lease. Leave the legacy brightness lifecycle acknowledgement off until the conflicting automation is patched.",
+        "data": {
+          "profile_id": "Stable profile ID",
+          "profile_name": "Profile name",
+          "area_id": "Area",
+          "root_light_entity_id": "Root light",
+          "target_light_entity_ids": "Explicit wake-light leaves",
+          "occupancy_entity_id": "Occupancy entity (advisory)",
+          "pbl_switch_entity_id": "Presence Based Lighting switch",
+          "vacation_entity_id": "Vacation entity",
+          "blocker_entity_ids": "Fail-closed blockers",
+          "sleepypod_schedule_entity_id": "SleepyPod schedule sensor",
+          "sleepypod_source_sides": "Allowed SleepyPod sides",
+          "sleepypod_left_state_entity_id": "SleepyPod left alarm-state sensor",
+          "sleepypod_right_state_entity_id": "SleepyPod right alarm-state sensor",
+          "default_ramp_minutes": "Default ramp minutes",
+          "default_post_wake_hold_minutes": "Post-wake hold minutes (v1 fixed at 5)",
+          "legacy_brightness_lifecycle_safe": "Legacy brightness-255 lifecycle has been retired or patched"
+        },
+        "data_description": {
+          "target_light_entity_ids": "Select only the leaf lights Wake Light may own. Do not implicitly include every group member.",
+          "blocker_entity_ids": "Every blocker must be exactly off. Include the room Adaptive Lighting switch.",
+          "legacy_brightness_lifecycle_safe": "Leave this acknowledgement off until the existing full-brightness room lifecycle no longer races the Wake Light coordinator."
+        }
+      }
+    },
+    "error": {
+      "invalid_profile": "The profile is invalid. Check required entities, explicit leaf targets, SleepyPod source settings, numeric ranges, and that the root light is not also a leaf. Then save again."
+    },
+    "abort": {
+      "already_configured": "This stable profile ID is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Edit wake-light room",
+        "description": "Saving profile changes reloads the profile. During a normal reload, any active ownership lease is released fail-dark.",
+        "data": {
+          "profile_name": "Profile name",
+          "area_id": "Area",
+          "root_light_entity_id": "Root light",
+          "target_light_entity_ids": "Explicit wake-light leaves",
+          "occupancy_entity_id": "Occupancy entity (advisory)",
+          "pbl_switch_entity_id": "Presence Based Lighting switch",
+          "vacation_entity_id": "Vacation entity",
+          "blocker_entity_ids": "Fail-closed blockers",
+          "sleepypod_schedule_entity_id": "SleepyPod schedule sensor",
+          "sleepypod_source_sides": "Allowed SleepyPod sides",
+          "sleepypod_left_state_entity_id": "SleepyPod left alarm-state sensor",
+          "sleepypod_right_state_entity_id": "SleepyPod right alarm-state sensor",
+          "default_ramp_minutes": "Default ramp minutes",
+          "default_post_wake_hold_minutes": "Post-wake hold minutes (v1 fixed at 5)",
+          "legacy_brightness_lifecycle_safe": "Legacy brightness-255 lifecycle has been retired or patched"
+        },
+        "data_description": {
+          "target_light_entity_ids": "Select only the leaf lights Wake Light may own. Do not implicitly include every group member.",
+          "blocker_entity_ids": "Every blocker must be exactly off. Include the room Adaptive Lighting switch.",
+          "legacy_brightness_lifecycle_safe": "Leave this acknowledgement off until the existing full-brightness room lifecycle no longer races the Wake Light coordinator."
+        }
+      }
+    },
+    "error": {
+      "invalid_profile": "The profile is invalid. Check required entities, explicit leaf targets, SleepyPod source settings, numeric ranges, and that the root light is not also a leaf. Then save again."
+    }
+  }
+}

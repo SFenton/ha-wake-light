@@ -1,0 +1,70 @@
+command:
+  name: Command
+  description: >
+    Apply one idempotent expected-revision command to a Wake Light room
+    profile. Source-bound SleepyPod alarms are read-only.
+  fields:
+    profile_id:
+      name: Profile ID
+      required: true
+      selector:
+        text: {}
+    expected_revision:
+      name: Expected revision
+      required: true
+      selector:
+        number:
+          min: 0
+          mode: box
+    request_id:
+      name: Request ID
+      description: Stable opaque idempotency token for this exact payload.
+      required: true
+      selector:
+        text: {}
+    operation:
+      name: Operation
+      required: true
+      selector:
+        select:
+          options:
+            - upsert_alarm
+            - delete_alarm
+            - update_defaults
+            - bind_source
+            - dismiss
+            - cancel_occurrence
+            - end_episode
+    alarm:
+      name: Alarm
+      description: Native alarm object for upsert_alarm.
+      required: false
+      selector:
+        object: {}
+    alarm_id:
+      name: Alarm ID
+      required: false
+      selector:
+        text: {}
+    enabled:
+      name: Enabled
+      required: false
+      selector:
+        boolean: {}
+    defaults:
+      name: Defaults
+      description: Ramp and fixed post-wake hold settings.
+      required: false
+      selector:
+        object: {}
+    source_ref:
+      name: Source reference
+      description: Configured read-only source such as sleepypod:left.
+      required: false
+      selector:
+        text: {}
+    occurrence_id:
+      name: Occurrence ID
+      required: false
+      selector:
+        text: {}
