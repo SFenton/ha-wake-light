@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+import json
 from pathlib import Path
 import sys
 import types
@@ -314,6 +315,80 @@ class WakeLightRuntimeStubTests(unittest.IsolatedAsyncioTestCase):
         )
         coordinator_module.utc_now = lambda: clock_value[0]
         return coordinator, hass, clock_value
+
+    async def test_one_time_alarm_provisions_and_cleans_only_its_bed_alarm(self) -> None:
+        now = datetime(2030, 1, 1, 6, 0, tzinfo=UTC)
+        schedule_entity = "sensor.sleepypod_schedules"
+        wake_profile = replace(
+            _profile(),
+            sleepypod_schedule_entity_id=schedule_entity,
+            sleepypod_source_sides=("left", "right"),
+        )
+        schedule = {
+            side: {
+                day: {"alarms": []}
+                for day in (
+                    "sunday", "monday", "tuesday", "wednesday",
+                    "thursday", "friday", "saturday",
+                )
+            }
+            for side in ("left", "right")
+        }
+        values = _states(wake_profile)
+        values[schedule_entity] = _State("ready", schedule)
+        hass = _Hass(values, lambda: now)
+        coordinator = WakeLightCoordinator(hass, _Entry(), wake_profile)
+        coordinator_module.utc_now = lambda: now
+        wake = now + timedelta(hours=1)
+
+        response = await coordinator.async_handle_command({
+            "profile_id": wake_profile.profile_id,
+            "expected_revision": 0,
+            "request_id": "nap-create",
+            "operation": "upsert_alarm",
+            "alarm": {
+                "id": "nap",
+                "label": "Nap",
+                "kind": "once",
+                "date": wake.date().isoformat(),
+                "local_time": wake.strftime("%H:%M"),
+                "ramp_minutes": 30,
+                "revision": 0,
+                "enabled": True,
+                "source": "native",
+                "weekdays": [],
+                "bed_sides": ["right"],
+            },
+        })
+
+        self.assertEqual(response["outcome"], "accepted")
+        mqtt_calls = [call for call in hass.services.calls if call[:2] == ("mqtt", "publish")]
+        self.assertEqual(len(mqtt_calls), 1)
+        created = json.loads(mqtt_calls[0][2]["payload"])
+        self.assertEqual(created["right"]["tuesday"]["alarms"][0]["time"], "07:00")
+        self.assertEqual(len(coordinator.state.temporary_bed_alarms), 1)
+
+        schedule["right"]["tuesday"]["alarms"] = [{
+            "id": 52,
+            "alarmTemperature": 82,
+            "duration": 300,
+            "enabled": True,
+            "time": "07:00",
+            "vibrationIntensity": 100,
+            "vibrationPattern": "rise",
+        }]
+        coordinator._refresh_source_cache_locked(now + timedelta(seconds=1))
+        self.assertEqual(coordinator.state.temporary_bed_alarms[0].schedule_id, 52)
+
+        async with coordinator._lock:
+            await coordinator._cleanup_temporary_bed_alarms_locked(
+                now + timedelta(hours=1, minutes=10)
+            )
+        mqtt_calls = [call for call in hass.services.calls if call[:2] == ("mqtt", "publish")]
+        self.assertEqual(len(mqtt_calls), 2)
+        removed = json.loads(mqtt_calls[-1][2]["payload"])
+        self.assertEqual(removed["right"]["tuesday"]["alarms"], [])
+        self.assertEqual(coordinator.state.temporary_bed_alarms, ())
 
     async def test_dispatches_only_through_pbl_and_releases_after_hold(self) -> None:
         coordinator, hass, clock = await self._coordinator()

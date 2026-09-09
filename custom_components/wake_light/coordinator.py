@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
+import json
 import logging
 import math
 from typing import Any, Mapping
@@ -21,6 +22,12 @@ from homeassistant.helpers.event import (
 )
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
+from .bed_schedule import (
+    add_temporary_alarm_payload,
+    bind_temporary_alarm_id,
+    execution_weekday,
+    remove_temporary_alarm_payload,
+)
 from .commands import CommandEffect, apply_command
 from .const import (
     DEFAULT_MISSED_ALARM_CATCHUP_SECONDS,
@@ -62,6 +69,9 @@ from .const import (
     PBL_SERVICE_DISPATCH,
     PBL_SERVICE_RELEASE,
     RECOVERY_RETRY_BUDGET_SECONDS,
+    SOURCE_REF_PREFIX,
+    TEMPORARY_BED_ALARM_CLEANUP_GRACE_SECONDS,
+    TEMPORARY_BED_ALARM_RETRY_SECONDS,
     UNAVAILABLE_STATES,
     USER_CANCELLATION_CAUSES,
 )
@@ -92,6 +102,8 @@ from .model import (
     ProfileState,
     ScheduledOccurrence,
     SourceSnapshot,
+    TemporaryBedAlarm,
+    WakeLightAlarm,
     WakeLightProfile,
     opaque_ref,
     parse_datetime,
@@ -105,6 +117,7 @@ from .scheduler import (
     normalize_source_terminal_reason,
     refresh_source_snapshot,
     resolve_profile_occurrences,
+    resolve_wall_datetime,
     runnable_alarms,
     stale_once_alarm_ids,
     source_event_matches,
@@ -204,6 +217,19 @@ class WakeLightCoordinator(DataUpdateCoordinator[SensorReadModel]):
         """Apply the public command service and its lease-side effect."""
         async with self._lock:
             command_now = utc_now()
+            previous_state = self.state
+            operation = command.get("operation")
+            previous_alarm = next(
+                (
+                    alarm for alarm in previous_state.alarms
+                    if alarm.id == (
+                        command.get("alarm", {}).get("id")
+                        if isinstance(command.get("alarm"), Mapping)
+                        else command.get("alarm_id")
+                    )
+                ),
+                None,
+            )
             decision = apply_command(
                 self.state,
                 self.profile,
@@ -212,8 +238,36 @@ class WakeLightCoordinator(DataUpdateCoordinator[SensorReadModel]):
                 timezone=self._timezone,
             )
             self.state = decision.state
-            if command.get("operation") == "update_defaults":
+            changed = self.state.revision != previous_state.revision
+            if operation == "update_defaults":
                 self._refresh_source_cache_locked(command_now)
+            if changed and operation in {"upsert_alarm", "delete_alarm"}:
+                alarm_id = previous_alarm.id if previous_alarm is not None else None
+                if alarm_id is not None:
+                    await self._cleanup_temporary_bed_alarms_locked(
+                        command_now, alarm_id=alarm_id, force=True,
+                    )
+                if operation == "upsert_alarm":
+                    current_alarm = next(
+                        (
+                            alarm for alarm in self.state.alarms
+                            if isinstance(command.get("alarm"), Mapping)
+                            and alarm.id == command["alarm"].get("id")
+                        ),
+                        None,
+                    )
+                    if current_alarm is not None:
+                        try:
+                            await self._provision_temporary_bed_alarms_locked(
+                                current_alarm, command_now,
+                            )
+                        except ValueError as err:
+                            self.state = previous_state
+                            return {
+                                **decision.response,
+                                "outcome": "invalid_request",
+                                "error": str(err),
+                            }
             if decision.effect is not None:
                 await self._apply_command_effect_locked(
                     decision.effect,
@@ -553,6 +607,151 @@ class WakeLightCoordinator(DataUpdateCoordinator[SensorReadModel]):
                 defaults=self.state.defaults,
             )
         self.state = replace(self.state, source_cache=cache)
+        self._bind_temporary_bed_alarm_ids_locked(attributes)
+
+    def _bed_schedule_attributes_locked(self) -> Mapping[str, Any] | None:
+        entity_id = self.profile.sleepypod_schedule_entity_id
+        source_state = self.hass.states.get(entity_id) if entity_id else None
+        if (
+            source_state is None
+            or source_state.state in UNAVAILABLE_STATES
+            or not isinstance(source_state.attributes, Mapping)
+        ):
+            return None
+        return source_state.attributes
+
+    def _bind_temporary_bed_alarm_ids_locked(
+        self, attributes: Mapping[str, Any] | None,
+    ) -> None:
+        if attributes is None or not self.state.temporary_bed_alarms:
+            return
+        changed = False
+        records = []
+        for record in self.state.temporary_bed_alarms:
+            if record.schedule_id is not None:
+                records.append(record)
+                continue
+            schedule_id = bind_temporary_alarm_id(
+                attributes,
+                record.side,
+                record.weekday,
+                record.local_time,
+                record.baseline_schedule_ids,
+            )
+            if schedule_id is None:
+                records.append(record)
+                continue
+            records.append(replace(record, schedule_id=schedule_id))
+            changed = True
+        if changed:
+            self.state = replace(self.state, temporary_bed_alarms=tuple(records))
+
+    async def _publish_bed_schedule_locked(
+        self, payload: Mapping[str, Any],
+    ) -> None:
+        await self.hass.services.async_call(
+            "mqtt",
+            "publish",
+            {
+                "topic": self.profile.sleepypod_schedule_set_topic,
+                "payload": json.dumps(payload, separators=(",", ":")),
+            },
+            blocking=True,
+        )
+
+    async def _provision_temporary_bed_alarms_locked(
+        self, alarm: WakeLightAlarm, now: datetime,
+    ) -> None:
+        if not alarm.enabled or not alarm.bed_sides or alarm.date is None:
+            return
+        attributes = self._bed_schedule_attributes_locked()
+        if attributes is None:
+            raise ValueError("bed_schedule_unavailable")
+        weekday = execution_weekday(alarm.date)
+        wake_at = resolve_wall_datetime(
+            date.fromisoformat(alarm.date), alarm.local_time, self._timezone,
+        ).value.astimezone(UTC)
+        cleanup_at = wake_at + timedelta(
+            seconds=TEMPORARY_BED_ALARM_CLEANUP_GRACE_SECONDS
+        )
+        if any(
+            side not in self.profile.sleepypod_source_sides
+            for side in alarm.bed_sides
+        ):
+            raise ValueError("bed_side_unavailable")
+        records = list(self.state.temporary_bed_alarms)
+        for side in alarm.bed_sides:
+            payload, baseline_ids = add_temporary_alarm_payload(
+                attributes, side, weekday, alarm.local_time,
+            )
+            if payload is None:
+                continue
+            record = TemporaryBedAlarm(
+                alarm_id=alarm.id,
+                source_ref=f"{SOURCE_REF_PREFIX}{side}",
+                date=alarm.date,
+                weekday=weekday,
+                local_time=alarm.local_time,
+                cleanup_at=cleanup_at,
+                baseline_schedule_ids=baseline_ids,
+            )
+            records.append(record)
+            self.state = replace(
+                self.state, temporary_bed_alarms=tuple(records)
+            )
+            await self.store.async_save(self.state)
+            await self._publish_bed_schedule_locked(payload)
+
+    async def _cleanup_temporary_bed_alarms_locked(
+        self,
+        now: datetime,
+        *,
+        alarm_id: str | None = None,
+        force: bool = False,
+    ) -> bool:
+        records = list(self.state.temporary_bed_alarms)
+        if not records:
+            return True
+        attributes = self._bed_schedule_attributes_locked()
+        changed = False
+        retained: list[TemporaryBedAlarm] = []
+        for record in records:
+            selected = alarm_id is None or record.alarm_id == alarm_id
+            due = force or record.cleanup_at <= now.astimezone(UTC)
+            if not selected or not due:
+                retained.append(record)
+                continue
+            if attributes is None:
+                retained.append(
+                    replace(
+                        record,
+                        cleanup_at=now.astimezone(UTC)
+                        + timedelta(seconds=TEMPORARY_BED_ALARM_RETRY_SECONDS),
+                    )
+                )
+                changed = True
+                continue
+            payload = remove_temporary_alarm_payload(
+                attributes,
+                record.side,
+                record.weekday,
+                record.local_time,
+                record.baseline_schedule_ids,
+                record.schedule_id,
+            )
+            if payload is None and force and record.schedule_id is None:
+                retained.append(record)
+                continue
+            if payload is not None:
+                await self._publish_bed_schedule_locked(payload)
+            changed = True
+        if changed:
+            self.state = replace(
+                self.state, temporary_bed_alarms=tuple(retained)
+            )
+        return not any(
+            record.alarm_id == alarm_id for record in retained
+        ) if alarm_id is not None else True
 
     async def _handle_source_lifecycle_locked(
         self,
@@ -921,6 +1120,7 @@ class WakeLightCoordinator(DataUpdateCoordinator[SensorReadModel]):
 
     async def _reconcile_locked(self, now: datetime, trigger: str) -> None:
         now_utc = now.astimezone(UTC)
+        await self._cleanup_temporary_bed_alarms_locked(now_utc)
         self._scheduled = self._calculate_occurrences_locked(now_utc)
         await self._apply_observed_foreign_off_locked()
         run = self.state.active_run
@@ -2147,6 +2347,9 @@ class WakeLightCoordinator(DataUpdateCoordinator[SensorReadModel]):
             )
         if self._blocked_retry_at is not None:
             candidates.append(self._blocked_retry_at)
+        candidates.extend(
+            record.cleanup_at for record in self.state.temporary_bed_alarms
+        )
         future = [
             value.astimezone(UTC)
             for value in candidates

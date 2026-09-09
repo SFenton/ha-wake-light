@@ -23,11 +23,13 @@ from .const import (
     CONF_SLEEPYPOD_LEFT_STATE_ENTITY_ID,
     CONF_SLEEPYPOD_RIGHT_STATE_ENTITY_ID,
     CONF_SLEEPYPOD_SCHEDULE_ENTITY_ID,
+    CONF_SLEEPYPOD_SCHEDULE_SET_TOPIC,
     CONF_SLEEPYPOD_SOURCE_SIDES,
     CONF_TARGET_LIGHT_ENTITY_IDS,
     CONF_VACATION_ENTITY_ID,
     DEFAULT_POST_WAKE_HOLD_MINUTES,
     DEFAULT_RAMP_MINUTES,
+    DEFAULT_SLEEPYPOD_SCHEDULE_SET_TOPIC,
     DOMAIN,
     RAMP_MINUTE_OPTIONS,
     SOURCE_SIDE_LEFT,
@@ -128,6 +130,15 @@ def _profile_schema(
     ] = selector.EntitySelector(
         selector.EntitySelectorConfig(domain="sensor")
     )
+    fields[
+        vol.Optional(
+            CONF_SLEEPYPOD_SCHEDULE_SET_TOPIC,
+            default=defaults.get(
+                CONF_SLEEPYPOD_SCHEDULE_SET_TOPIC,
+                DEFAULT_SLEEPYPOD_SCHEDULE_SET_TOPIC,
+            ),
+        )
+    ] = selector.TextSelector()
     fields[
         vol.Optional(
             CONF_SLEEPYPOD_SOURCE_SIDES,

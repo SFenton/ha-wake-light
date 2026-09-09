@@ -10,6 +10,7 @@ import re
 from typing import Any, Iterable, Mapping
 
 from .const import (
+    ALARM_KIND_ONCE,
     ALARM_KIND_WEEKLY,
     ALARM_KINDS,
     ALARM_SOURCE_NATIVE,
@@ -28,11 +29,13 @@ from .const import (
     CONF_SLEEPYPOD_LEFT_STATE_ENTITY_ID,
     CONF_SLEEPYPOD_RIGHT_STATE_ENTITY_ID,
     CONF_SLEEPYPOD_SCHEDULE_ENTITY_ID,
+    CONF_SLEEPYPOD_SCHEDULE_SET_TOPIC,
     CONF_SLEEPYPOD_SOURCE_SIDES,
     CONF_TARGET_LIGHT_ENTITY_IDS,
     CONF_VACATION_ENTITY_ID,
     DEFAULT_POST_WAKE_HOLD_MINUTES,
     DEFAULT_RAMP_MINUTES,
+    DEFAULT_SLEEPYPOD_SCHEDULE_SET_TOPIC,
     FAILURE_MANUAL_REVOKE,
     MAX_ACTIVE_OCCURRENCES,
     MAX_ALARM_LINKS,
@@ -281,6 +284,7 @@ class WakeLightAlarm:
     enabled: bool = True
     date: str | None = None
     weekdays: tuple[str, ...] = ()
+    bed_sides: tuple[str, ...] = ()
     source: str = ALARM_SOURCE_NATIVE
     source_ref: str | None = None
     source_label: str | None = None
@@ -319,6 +323,12 @@ class WakeLightAlarm:
                 raise ValueError("invalid_alarm_date") from err
         if self.source == ALARM_SOURCE_SLEEPYPOD and not self.source_ref:
             raise ValueError("source_alarm_missing_ref")
+        if any(side not in SOURCE_SIDES for side in self.bed_sides):
+            raise ValueError("invalid_bed_sides")
+        if self.bed_sides and (
+            self.source != ALARM_SOURCE_NATIVE or self.kind != ALARM_KIND_ONCE
+        ):
+            raise ValueError("bed_sides_require_native_once_alarm")
         if any(
             day not in WEEKDAYS
             or isinstance(schedule_id, bool)
@@ -367,6 +377,15 @@ class WakeLightAlarm:
         )
         raw_date = value.get("date")
         alarm_date = raw_date.strip() if isinstance(raw_date, str) else None
+        raw_bed_sides = value.get("bed_sides", [])
+        if not isinstance(raw_bed_sides, (list, tuple)) or any(
+            not isinstance(side, str) or side not in SOURCE_SIDES
+            for side in raw_bed_sides
+        ):
+            raise ValueError("invalid_bed_sides")
+        bed_sides = tuple(
+            side for side in SOURCE_SIDES if side in dict.fromkeys(raw_bed_sides)
+        )
         source_ref = value.get("source_ref")
         source_label = value.get("source_label")
         return cls(
@@ -389,6 +408,7 @@ class WakeLightAlarm:
             enabled=value.get("enabled") is not False,
             date=alarm_date or None,
             weekdays=weekdays,
+            bed_sides=bed_sides,
             source=source,
             source_ref=(
                 _as_string(
@@ -434,6 +454,7 @@ class WakeLightAlarm:
             "source_label": self.source_label,
             "source_ref": self.source_ref,
             "weekdays": list(self.weekdays),
+            **({"bed_sides": list(self.bed_sides)} if self.bed_sides else {}),
             **(
                 {"source_schedule_ids": dict(self.source_schedule_ids)}
                 if self.source == ALARM_SOURCE_SLEEPYPOD
@@ -964,6 +985,7 @@ class WakeLightProfile:
     occupancy_entity_id: str | None = None
     blocker_entity_ids: tuple[str, ...] = ()
     sleepypod_schedule_entity_id: str | None = None
+    sleepypod_schedule_set_topic: str = DEFAULT_SLEEPYPOD_SCHEDULE_SET_TOPIC
     sleepypod_source_sides: tuple[str, ...] = ()
     source_state_entity_ids: Mapping[str, str] = field(default_factory=dict)
     legacy_brightness_lifecycle_safe: bool = False
@@ -1074,6 +1096,14 @@ class WakeLightProfile:
                 domain="sensor",
                 optional=True,
             ),
+            sleepypod_schedule_set_topic=_as_string(
+                value.get(
+                    CONF_SLEEPYPOD_SCHEDULE_SET_TOPIC,
+                    DEFAULT_SLEEPYPOD_SCHEDULE_SET_TOPIC,
+                ),
+                code="invalid_source_schedule_set_topic",
+                maximum=256,
+            ),
             sleepypod_source_sides=sides,
             source_state_entity_ids=state_entities,
             defaults=WakeLightDefaults.from_dict(
@@ -1105,6 +1135,79 @@ class WakeLightProfile:
 
 
 @dataclass(frozen=True)
+class TemporaryBedAlarm:
+    """A dated SleepyPod alarm created for one native Wake Light alarm."""
+
+    alarm_id: str
+    source_ref: str
+    date: str
+    weekday: str
+    local_time: str
+    cleanup_at: datetime
+    baseline_schedule_ids: tuple[int, ...] = ()
+    schedule_id: int | None = None
+
+    def __post_init__(self) -> None:
+        if not _OPAQUE_ID_RE.fullmatch(self.alarm_id):
+            raise ValueError("invalid_alarm_id")
+        if self.source_ref not in {
+            f"{SOURCE_REF_PREFIX}{side}" for side in SOURCE_SIDES
+        }:
+            raise ValueError("invalid_source_ref")
+        if self.weekday not in WEEKDAYS:
+            raise ValueError("invalid_alarm_weekday")
+        date.fromisoformat(self.date)
+        _local_time(self.local_time)
+        as_utc(self.cleanup_at)
+        if any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 1
+            for value in self.baseline_schedule_ids
+        ):
+            raise ValueError("invalid_source_schedule_ids")
+        if self.schedule_id is not None and (
+            isinstance(self.schedule_id, bool)
+            or not isinstance(self.schedule_id, int)
+            or self.schedule_id < 1
+        ):
+            raise ValueError("invalid_source_schedule_id")
+
+    @property
+    def side(self) -> str:
+        return self.source_ref.removeprefix(SOURCE_REF_PREFIX)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "alarm_id": self.alarm_id,
+            "source_ref": self.source_ref,
+            "date": self.date,
+            "weekday": self.weekday,
+            "local_time": self.local_time,
+            "cleanup_at": self.cleanup_at.isoformat(),
+            "baseline_schedule_ids": list(self.baseline_schedule_ids),
+            "schedule_id": self.schedule_id,
+        }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> TemporaryBedAlarm:
+        baseline = value.get("baseline_schedule_ids", [])
+        if not isinstance(baseline, list):
+            raise ValueError("invalid_source_schedule_ids")
+        cleanup_at = parse_datetime(value.get("cleanup_at"))
+        if cleanup_at is None:
+            raise ValueError("invalid_cleanup_at")
+        return cls(
+            alarm_id=_as_string(value.get("alarm_id"), code="invalid_alarm_id"),
+            source_ref=_as_string(value.get("source_ref"), code="invalid_source_ref"),
+            date=_as_string(value.get("date"), code="invalid_alarm_date"),
+            weekday=_as_string(value.get("weekday"), code="invalid_alarm_weekday"),
+            local_time=_local_time(value.get("local_time")),
+            cleanup_at=cleanup_at,
+            baseline_schedule_ids=tuple(baseline),
+            schedule_id=value.get("schedule_id"),
+        )
+
+
+@dataclass(frozen=True)
 class ProfileState:
     """Versioned persisted mutable profile state."""
 
@@ -1113,6 +1216,7 @@ class ProfileState:
     defaults: WakeLightDefaults
     alarms: tuple[WakeLightAlarm, ...] = ()
     alarm_links: Mapping[str, bool] = field(default_factory=dict)
+    temporary_bed_alarms: tuple[TemporaryBedAlarm, ...] = ()
     source_cache: Mapping[str, SourceSnapshot] = field(default_factory=dict)
     active_run: ActiveRun | None = None
     last_outcome: str | None = None
@@ -1332,6 +1436,9 @@ class ProfileState:
             "defaults": self.defaults.to_dict(),
             "alarms": [alarm.to_dict() for alarm in self.alarms],
             "alarm_links": dict(self.alarm_links),
+            "temporary_bed_alarms": [
+                alarm.to_dict() for alarm in self.temporary_bed_alarms
+            ],
             "source_cache": {
                 key: value.to_dict() for key, value in self.source_cache.items()
             },
@@ -1398,6 +1505,18 @@ class ProfileState:
                     continue
                 if source_ref in profile.source_refs:
                     links[key] = False
+
+        temporary_bed_alarms: list[TemporaryBedAlarm] = []
+        if isinstance(value.get("temporary_bed_alarms"), list):
+            for item in value["temporary_bed_alarms"][:MAX_NATIVE_ALARMS]:
+                if not isinstance(item, Mapping):
+                    continue
+                try:
+                    temporary = TemporaryBedAlarm.from_dict(item)
+                except (TypeError, ValueError):
+                    continue
+                if temporary.source_ref in profile.source_refs:
+                    temporary_bed_alarms.append(temporary)
 
         source_cache = {
             source_ref: SourceSnapshot() for source_ref in profile.source_refs
@@ -1468,6 +1587,7 @@ class ProfileState:
             defaults=defaults,
             alarms=tuple(alarms),
             alarm_links=links,
+            temporary_bed_alarms=tuple(temporary_bed_alarms),
             source_cache=source_cache,
             active_run=active_run,
             last_outcome=(

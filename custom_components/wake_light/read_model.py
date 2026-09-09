@@ -186,7 +186,7 @@ def build_sensor_read_model(
     return SensorReadModel(
         state=phase,
         attributes={
-            "contract_version": 4,
+            "contract_version": 5,
             "available": available,
             "command_available": integration_available,
             "profile_id": profile.profile_id,
