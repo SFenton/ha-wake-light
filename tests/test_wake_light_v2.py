@@ -125,7 +125,6 @@ class WakeLightRuntimeV2Tests(unittest.IsolatedAsyncioTestCase):
         coordinator = runtime.WakeLightCoordinator(hass, runtime._Entry(), profile)
         runtime.coordinator_module.utc_now = lambda: clock[0]
         if source:
-            coordinator.state = replace(coordinator.state, source_bindings={"sleepypod:right": True})
             coordinator._refresh_source_cache_locked(clock[0])
         return coordinator, hass, clock
 
@@ -329,4 +328,4 @@ class WakeLightRuntimeV2Tests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(model.state, "degraded")
         self.assertIn("source_unavailable", model.attributes["failures"])
         self.assertEqual(model.attributes["current_blockers"], [])
-        self.assertEqual(model.attributes["contract_version"], 3)
+        self.assertEqual(model.attributes["contract_version"], 4)

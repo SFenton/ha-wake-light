@@ -31,7 +31,7 @@ command:
             - upsert_alarm
             - delete_alarm
             - update_defaults
-            - bind_source
+            - link_alarm
             - dismiss
             - cancel_occurrence
             - end_episode
@@ -57,12 +57,15 @@ command:
       required: false
       selector:
         object: {}
-    source_ref:
-      name: Source reference
-      description: Configured read-only source such as sleepypod:left.
+    link_keys:
+      name: Alarm link keys
+      description: >-
+        Wake-light link keys for one source alarm, one per execution day and
+        formatted as source_ref#weekday#HH:MM such as
+        sleepypod:right#monday#06:30.
       required: false
       selector:
-        text: {}
+        object: {}
     occurrence_id:
       name: Occurrence ID
       required: false

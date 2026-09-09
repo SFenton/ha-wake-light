@@ -125,13 +125,15 @@ def build_sensor_read_model(
         current_blockers.append(FAILURE_BLOCKER_NOT_OFF)
     if not profile.legacy_brightness_lifecycle_safe:
         current_blockers.append(FAILURE_LEGACY_LIFECYCLE_UNRESOLVED)
-    for source_ref, enabled in state.source_bindings.items():
+    for source_ref in profile.source_refs:
+        if not state.has_linked_alarms(source_ref):
+            continue
         snapshot = state.source_cache.get(source_ref)
-        if enabled and (snapshot is None or not snapshot.available):
+        if snapshot is None or not snapshot.available:
             current_blockers.append(
                 snapshot.failure_code if snapshot and snapshot.failure_code else "source_unavailable"
             )
-        if enabled and _state_or_missing(
+        if _state_or_missing(
             entity_states, profile.source_state_entity_ids.get(source_ref),
         ) in {*UNAVAILABLE_STATES, "missing"}:
             current_blockers.append("source_lifecycle_unavailable")
@@ -170,11 +172,12 @@ def build_sensor_read_model(
         failure_codes.append(FAILURE_BLOCKER_NOT_OFF)
     if pbl_not_ready and FAILURE_PBL_NOT_READY not in failure_codes:
         failure_codes.append(FAILURE_PBL_NOT_READY)
-    for source_ref, enabled in state.source_bindings.items():
+    for source_ref in profile.source_refs:
+        if not state.has_linked_alarms(source_ref):
+            continue
         snapshot = state.source_cache.get(source_ref)
         if (
-            enabled
-            and snapshot is not None
+            snapshot is not None
             and snapshot.failure_code
             and snapshot.failure_code not in failure_codes
         ):
@@ -183,7 +186,7 @@ def build_sensor_read_model(
     return SensorReadModel(
         state=phase,
         attributes={
-            "contract_version": 3,
+            "contract_version": 4,
             "available": available,
             "command_available": integration_available,
             "profile_id": profile.profile_id,
@@ -253,6 +256,6 @@ def build_sensor_read_model(
                 "light_state": light_state,
                 "light_target_name": light_target_name,
             },
-            "source_bindings": dict(state.source_bindings),
+            "alarm_links": dict(state.alarm_links),
         },
     )

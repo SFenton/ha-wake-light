@@ -37,18 +37,18 @@ from wake_light.model import (  # noqa: E402
 def profile() -> WakeLightProfile:
     return WakeLightProfile(
         profile_id="master-bedroom",
-        name="Bedroom",
-        root_light_entity_id="light.bedroom",
+        name="Master Bedroom",
+        root_light_entity_id="light.master_bedroom",
         target_light_entity_ids=(
-            "light.bedroom_window_light",
-            "light.bedroom_door_light",
-            "light.left_nightstand_light",
-            "light.right_nightstand_light",
+            "light.master_bedroom_window_light",
+            "light.master_bedroom_door_light",
+            "light.stephen_nightstand_light",
+            "light.steph_nightstand_light",
         ),
-        pbl_switch_entity_id="switch.bedroom_presence_allowed",
-        vacation_entity_id="input_boolean.vacation",
+        pbl_switch_entity_id="switch.master_bedroom_presence_allowed",
+        vacation_entity_id="input_boolean.vacation_mode",
         defaults=WakeLightDefaults(),
-        blocker_entity_ids=("switch.adaptive_lighting_bedroom",),
+        blocker_entity_ids=("switch.adaptive_lighting_master_bedroom",),
         legacy_brightness_lifecycle_safe=True,
     )
 
@@ -271,12 +271,12 @@ class WakeLightEngineTests(unittest.TestCase):
 
         reduced, outcome = release_leaf(
             run,
-            "light.bedroom_window_light",
+            "light.master_bedroom_window_light",
         )
         self.assertEqual(outcome, "updated")
         assert reduced is not None
         self.assertNotIn(
-            "light.bedroom_window_light",
+            "light.master_bedroom_window_light",
             reduced.target_entity_ids,
         )
         current = reduced

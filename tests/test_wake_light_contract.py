@@ -33,19 +33,19 @@ from wake_light.scheduler import resolve_alarm_occurrence  # noqa: E402
 def profile(*, legacy_safe: bool = True) -> WakeLightProfile:
     return WakeLightProfile(
         profile_id="master-bedroom",
-        name="Bedroom",
-        root_light_entity_id="light.bedroom",
+        name="Master Bedroom",
+        root_light_entity_id="light.master_bedroom",
         target_light_entity_ids=(
-            "light.bedroom_window_light",
-            "light.bedroom_door_light",
-            "light.left_nightstand_light",
-            "light.right_nightstand_light",
+            "light.master_bedroom_window_light",
+            "light.master_bedroom_door_light",
+            "light.stephen_nightstand_light",
+            "light.steph_nightstand_light",
         ),
-        occupancy_entity_id="binary_sensor.bedroom_occupancy_sensors",
-        pbl_switch_entity_id="switch.bedroom_presence_allowed",
-        vacation_entity_id="input_boolean.vacation",
-        blocker_entity_ids=("switch.adaptive_lighting_bedroom",),
-        sleepypod_schedule_entity_id="sensor.bedroom_sleepypod_schedules",
+        occupancy_entity_id="binary_sensor.master_bedroom_occupancy_sensors",
+        pbl_switch_entity_id="switch.master_bedroom_presence_allowed",
+        vacation_entity_id="input_boolean.vacation_mode",
+        blocker_entity_ids=("switch.adaptive_lighting_master_bedroom",),
+        sleepypod_schedule_entity_id="sensor.master_bedroom_sleepypod_schedules",
         sleepypod_source_sides=("left", "right"),
         defaults=WakeLightDefaults(),
         legacy_brightness_lifecycle_safe=legacy_safe,
@@ -305,10 +305,7 @@ class WakeLightContractTests(unittest.TestCase):
             revision=4,
             defaults=wake_profile.defaults,
             alarms=(alarm,),
-            source_bindings={
-                "sleepypod:left": True,
-                "sleepypod:right": False,
-            },
+            alarm_links={"sleepypod:right#monday#06:30": False},
             source_cache={
                 "sleepypod:left": SourceSnapshot(
                     alarms=(),
@@ -441,7 +438,7 @@ class WakeLightContractTests(unittest.TestCase):
             state,
             wake_profile,
             entity_states=entity_states,
-            light_target_name="Bedroom Lights",
+            light_target_name="Master Bedroom Lights",
             next_occurrence=occurrence,
             now=datetime(2030, 1, 7, 5, tzinfo=UTC),
         )
@@ -470,7 +467,7 @@ class WakeLightContractTests(unittest.TestCase):
                 "last_cancellation",
                 "failures",
                 "safety",
-                "source_bindings",
+                "alarm_links",
             },
         )
         self.assertEqual(
@@ -549,7 +546,7 @@ class WakeLightContractTests(unittest.TestCase):
             state,
             wake_profile,
             entity_states=entity_states,
-            light_target_name="Bedroom Lights",
+            light_target_name="Master Bedroom Lights",
             next_occurrence=None,
             now=start + timedelta(minutes=40),
         )
@@ -603,3 +600,181 @@ class WakeLightContractTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WakeLightAlarmLinkTests(unittest.TestCase):
+    """Per-source-alarm wake-light links, enabled unless explicitly opted out."""
+
+    def _state(self) -> tuple[ProfileState, WakeLightProfile]:
+        wake_profile = profile()
+        source_alarm = WakeLightAlarm(
+            id="sp-right-0630",
+            label="SleepyPod Right Wake",
+            kind="weekly",
+            local_time="06:30",
+            ramp_minutes=30,
+            weekdays=("monday", "tuesday"),
+            source="sleepypod",
+            source_ref="sleepypod:right",
+            source_schedule_ids={"monday": 11, "tuesday": 12},
+        )
+        state = replace(
+            ProfileState.initial(wake_profile),
+            source_cache={
+                "sleepypod:left": SourceSnapshot(),
+                "sleepypod:right": SourceSnapshot(
+                    alarms=(source_alarm,),
+                    available=True,
+                ),
+            },
+        )
+        return state, wake_profile
+
+    def _link_command(
+        self,
+        link_keys: str | tuple[str, ...],
+        enabled: bool,
+        *,
+        revision: int = 0,
+        request_id: str = "link-1",
+    ) -> dict:
+        return {
+            "profile_id": "master-bedroom",
+            "expected_revision": revision,
+            "request_id": request_id,
+            "operation": "link_alarm",
+            "link_keys": (
+                [link_keys] if isinstance(link_keys, str) else list(link_keys)
+            ),
+            "enabled": enabled,
+        }
+
+    def test_source_alarms_are_linked_by_default(self) -> None:
+        from wake_light.scheduler import runnable_alarms
+
+        state, _wake_profile = self._state()
+        runnable = runnable_alarms(state)
+        self.assertEqual([alarm.id for alarm in runnable], ["sp-right-0630"])
+        self.assertEqual(runnable[0].weekdays, ("monday", "tuesday"))
+        self.assertTrue(state.has_linked_alarms("sleepypod:right"))
+        self.assertFalse(state.has_linked_alarms("sleepypod:left"))
+
+    def test_unlinking_one_day_trims_only_that_weekday(self) -> None:
+        from wake_light.scheduler import runnable_alarms
+
+        state, wake_profile = self._state()
+        result = apply_command(
+            state,
+            wake_profile,
+            self._link_command("sleepypod:right#monday#06:30", False),
+        )
+        self.assertEqual(result.response["outcome"], "accepted")
+        runnable = runnable_alarms(result.state)
+        self.assertEqual(runnable[0].weekdays, ("tuesday",))
+        self.assertEqual(runnable[0].source_schedule_ids, {"tuesday": 12})
+        self.assertEqual(
+            [alarm.id for alarm in result.state.public_alarms()],
+            ["sp-right-0630"],
+        )
+
+    def test_unlinking_every_day_removes_the_alarm_from_scheduling(self) -> None:
+        from wake_light.scheduler import runnable_alarms
+
+        state, wake_profile = self._state()
+        for index, day in enumerate(("monday", "tuesday")):
+            state = apply_command(
+                state,
+                wake_profile,
+                self._link_command(
+                    f"sleepypod:right#{day}#06:30",
+                    False,
+                    revision=index,
+                    request_id=f"link-{day}",
+                ),
+            ).state
+        self.assertEqual(runnable_alarms(state), ())
+        self.assertFalse(state.has_linked_alarms("sleepypod:right"))
+
+    def test_relinking_clears_the_stored_opt_out(self) -> None:
+        state, wake_profile = self._state()
+        state = apply_command(
+            state,
+            wake_profile,
+            self._link_command("sleepypod:right#monday#06:30", False),
+        ).state
+        self.assertEqual(state.alarm_links, {"sleepypod:right#monday#06:30": False})
+        result = apply_command(
+            state,
+            wake_profile,
+            self._link_command(
+                "sleepypod:right#monday#06:30",
+                True,
+                revision=1,
+                request_id="link-2",
+            ),
+        )
+        self.assertEqual(result.response["outcome"], "accepted")
+        self.assertEqual(result.state.alarm_links, {})
+
+    def test_repeating_the_current_link_state_is_no_change(self) -> None:
+        state, wake_profile = self._state()
+        result = apply_command(
+            state,
+            wake_profile,
+            self._link_command("sleepypod:right#monday#06:30", True),
+        )
+        self.assertEqual(result.response["outcome"], "no_change")
+
+    def test_malformed_and_unconfigured_link_keys_are_rejected(self) -> None:
+        state, wake_profile = self._state()
+        for link_key in (
+            "sleepypod:right#someday#06:30",
+            "sleepypod:right#monday#6:30",
+            "sleepypod:right#monday",
+            "sleepypod:middle#monday#06:30",
+        ):
+            with self.subTest(link_key=link_key):
+                result = apply_command(
+                    state,
+                    wake_profile,
+                    self._link_command(link_key, False),
+                )
+                self.assertEqual(result.response["outcome"], "invalid_request")
+
+    def test_one_command_unlinks_every_day_of_a_grouped_alarm(self) -> None:
+        from wake_light.scheduler import runnable_alarms
+
+        state, wake_profile = self._state()
+        result = apply_command(
+            state,
+            wake_profile,
+            self._link_command(
+                ("sleepypod:right#monday#06:30", "sleepypod:right#tuesday#06:30"),
+                False,
+            ),
+        )
+        self.assertEqual(result.response["outcome"], "accepted")
+        self.assertEqual(runnable_alarms(result.state), ())
+        self.assertEqual(
+            sorted(result.state.alarm_links),
+            ["sleepypod:right#monday#06:30", "sleepypod:right#tuesday#06:30"],
+        )
+
+    def test_opt_outs_round_trip_through_the_store(self) -> None:
+        state, wake_profile = self._state()
+        state = apply_command(
+            state,
+            wake_profile,
+            self._link_command("sleepypod:right#monday#06:30", False),
+        ).state
+        restored = ProfileState.from_dict(state.to_dict(), wake_profile)
+        self.assertEqual(
+            restored.alarm_links,
+            {"sleepypod:right#monday#06:30": False},
+        )
+        self.assertFalse(
+            restored.alarm_link_enabled("sleepypod:right", "monday", "06:30")
+        )
+        self.assertTrue(
+            restored.alarm_link_enabled("sleepypod:right", "tuesday", "06:30")
+        )
