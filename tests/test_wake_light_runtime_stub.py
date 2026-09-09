@@ -238,17 +238,17 @@ class _Hass:
 def _profile() -> WakeLightProfile:
     return WakeLightProfile(
         profile_id="master-bedroom",
-        name="Bedroom",
-        root_light_entity_id="light.bedroom",
+        name="Master Bedroom",
+        root_light_entity_id="light.master_bedroom",
         target_light_entity_ids=(
-            "light.bedroom_window_light",
-            "light.bedroom_door_light",
-            "light.left_nightstand_light",
-            "light.right_nightstand_light",
+            "light.master_bedroom_window_light",
+            "light.master_bedroom_door_light",
+            "light.stephen_nightstand_light",
+            "light.steph_nightstand_light",
         ),
-        pbl_switch_entity_id="switch.bedroom_presence_allowed",
-        vacation_entity_id="input_boolean.vacation",
-        blocker_entity_ids=("switch.adaptive_lighting_bedroom",),
+        pbl_switch_entity_id="switch.master_bedroom_presence_allowed",
+        vacation_entity_id="input_boolean.vacation_mode",
+        blocker_entity_ids=("switch.adaptive_lighting_master_bedroom",),
         defaults=WakeLightDefaults(),
         legacy_brightness_lifecycle_safe=True,
     )
@@ -258,7 +258,7 @@ def _states(profile: WakeLightProfile):
     values = {
         profile.root_light_entity_id: _State(
             "off",
-            {"brightness": 0, "friendly_name": "Bedroom Lights"},
+            {"brightness": 0, "friendly_name": "Master Bedroom Lights"},
         ),
         profile.pbl_switch_entity_id: _State(
             "on",
@@ -334,7 +334,7 @@ class WakeLightRuntimeStubTests(unittest.IsolatedAsyncioTestCase):
             {"brightness_pct": 1.0, "transition": 0.0},
         )
         self.assertNotIn(
-            "light.bedroom_bathroom_light",
+            "light.master_bedroom_bathroom_light",
             dispatch[2]["target_entity_ids"],
         )
 
@@ -673,7 +673,7 @@ class WakeLightRuntimeStubTests(unittest.IsolatedAsyncioTestCase):
             original_run = coordinator.state.active_run
             assert original_run is not None
             await coordinator._release_foreign_off_leaf_locked(
-                "light.bedroom_window_light"
+                "light.master_bedroom_window_light"
             )
         updated_run = coordinator.state.active_run
         assert updated_run is not None
@@ -685,7 +685,7 @@ class WakeLightRuntimeStubTests(unittest.IsolatedAsyncioTestCase):
             == ("presence_based_lighting", "acquire_control")
         ][-1]
         self.assertNotIn(
-            "light.bedroom_window_light",
+            "light.master_bedroom_window_light",
             latest_acquire[2]["target_entity_ids"],
         )
 
@@ -719,7 +719,7 @@ class WakeLightRuntimeStubTests(unittest.IsolatedAsyncioTestCase):
             original_run.lease_id,
         )
         self.assertNotIn(
-            "light.bedroom_window_light",
+            "light.master_bedroom_window_light",
             recovery_acquire[2]["target_entity_ids"],
         )
 
@@ -1780,7 +1780,6 @@ class WakeLightRuntimeStubTests(unittest.IsolatedAsyncioTestCase):
         )
         coordinator.state = replace(
             ProfileState.initial(wake_profile),
-            source_bindings={"sleepypod:left": True},
             source_cache={
                 "sleepypod:left": SourceSnapshot(
                     alarms=(source_alarm,),

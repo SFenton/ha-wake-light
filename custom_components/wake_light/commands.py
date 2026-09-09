@@ -11,12 +11,13 @@ from zoneinfo import ZoneInfo
 from .const import (
     ALARM_SOURCE_NATIVE,
     COMMAND_OPERATIONS,
+    MAX_ALARM_LINKS,
     MAX_NATIVE_ALARMS,
-    OP_BIND_SOURCE,
     OP_CANCEL_OCCURRENCE,
     OP_DELETE_ALARM,
     OP_DISMISS,
     OP_END_EPISODE,
+    OP_LINK_ALARM,
     OP_UPDATE_DEFAULTS,
     OP_UPSERT_ALARM,
     RAMP_MINUTE_OPTIONS,
@@ -29,10 +30,13 @@ from .const import (
     OUTCOME_READ_ONLY_SOURCE,
     OUTCOME_REQUEST_ID_CONFLICT,
     OUTCOME_REVISION_CONFLICT,
+    WEEKDAYS,
 )
 from .engine import remove_occurrence
 from .model import (
     ActiveRun,
+    alarm_link_key,
+    parse_alarm_link_key,
     ProfileState,
     WakeLightAlarm,
     WakeLightProfile,
@@ -44,6 +48,23 @@ from .model import (
 from .scheduler import calendar_windows, expand_relight_fence, runnable_alarms, terminal_once_alarm_ids, unsupported_episode_ids
 
 _OPAQUE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,127}$")
+
+
+def _occurrence_matches_link(
+    schedule: Any,
+    source_ref: str,
+    weekday: str,
+    local_time: str,
+    timezone: ZoneInfo | None,
+) -> bool:
+    """Return whether one planned occurrence belongs to a source alarm link."""
+    if schedule.source_ref != source_ref:
+        return False
+    local = schedule.wake_at.astimezone(timezone or ZoneInfo("UTC"))
+    return (
+        WEEKDAYS[(local.weekday() + 1) % 7] == weekday
+        and local.strftime("%H:%M") == local_time
+    )
 _BASE_FIELDS = {
     "profile_id",
     "expected_revision",
@@ -54,7 +75,7 @@ _OPERATION_FIELDS = {
     OP_UPSERT_ALARM: {"alarm"},
     OP_DELETE_ALARM: {"alarm_id"},
     OP_UPDATE_DEFAULTS: {"defaults"},
-    OP_BIND_SOURCE: {"source_ref", "enabled"},
+    OP_LINK_ALARM: {"link_keys", "enabled"},
     OP_DISMISS: {"occurrence_id", "episode_ref"},
     OP_CANCEL_OCCURRENCE: {"occurrence_id", "episode_ref"},
     OP_END_EPISODE: {"episode_ref"},
@@ -410,41 +431,62 @@ def apply_command(
             next_state = replace(state, defaults=parsed)
             changed = True
 
-    elif operation == OP_BIND_SOURCE:
-        source_ref = command.get("source_ref")
+    elif operation == OP_LINK_ALARM:
+        raw_keys = command.get("link_keys")
         enabled = command.get("enabled")
-        if source_ref not in profile.source_refs:
-            return _invalid(
-                state,
-                request_id,
-                payload,
-                "source_not_configured",
-            )
+        if (
+            not isinstance(raw_keys, (list, tuple))
+            or not raw_keys
+            or len(raw_keys) > len(WEEKDAYS)
+            or any(not isinstance(item, str) for item in raw_keys)
+        ):
+            return _invalid(state, request_id, payload, "invalid_alarm_link_key")
+        try:
+            parsed_keys = [parse_alarm_link_key(item) for item in raw_keys]
+        except ValueError as err:
+            return _invalid(state, request_id, payload, str(err))
+        if any(source_ref not in profile.source_refs for source_ref, _, _ in parsed_keys):
+            return _invalid(state, request_id, payload, "source_not_configured")
         if not isinstance(enabled, bool):
-            return _invalid(
-                state,
-                request_id,
-                payload,
-                "invalid_enabled",
-            )
-        if state.source_bindings.get(str(source_ref)) == enabled:
+            return _invalid(state, request_id, payload, "invalid_enabled")
+        stale = [
+            parsed
+            for parsed in parsed_keys
+            if state.alarm_link_enabled(*parsed) != enabled
+        ]
+        if not stale:
             error = OUTCOME_NO_CHANGE
         else:
-            bindings = dict(state.source_bindings)
-            bindings[str(source_ref)] = enabled
-            next_state = replace(state, source_bindings=bindings)
+            links = dict(state.alarm_links)
+            for source_ref, weekday, local_time in stale:
+                key = alarm_link_key(source_ref, weekday, local_time)
+                if enabled:
+                    links.pop(key, None)
+                elif len(links) >= MAX_ALARM_LINKS:
+                    return _invalid(
+                        state,
+                        request_id,
+                        payload,
+                        "alarm_link_limit_exceeded",
+                    )
+                else:
+                    links[key] = False
+            next_state = replace(state, alarm_links=links)
             changed = True
             if not enabled and state.active_run is not None:
                 previous_run = state.active_run
                 removed = tuple(
                     item.schedule.occurrence_id
                     for item in previous_run.occurrences
-                    if item.schedule.source_ref == source_ref
+                    if any(
+                        _occurrence_matches_link(item.schedule, *parsed, timezone)
+                        for parsed in stale
+                    )
                 )
                 remaining = tuple(
                     item
                     for item in previous_run.occurrences
-                    if item.schedule.source_ref != source_ref
+                    if item.schedule.occurrence_id not in removed
                 )
                 if removed:
                     next_state = replace(
@@ -520,7 +562,7 @@ def apply_command(
             )
 
     validates_schedule = operation in {OP_UPSERT_ALARM, OP_UPDATE_DEFAULTS} or (
-        operation == OP_BIND_SOURCE and command.get("enabled") is True
+        operation == OP_LINK_ALARM and command.get("enabled") is True
     )
     if changed and operation == OP_UPSERT_ALARM and alarm.kind == "once" and alarm.enabled:
         anchor = next_state.auto_relight_blocked_from or (

@@ -35,6 +35,7 @@ from .const import (
     DEFAULT_RAMP_MINUTES,
     FAILURE_MANUAL_REVOKE,
     MAX_ACTIVE_OCCURRENCES,
+    MAX_ALARM_LINKS,
     MAX_CANCELLATION_OCCURRENCE_REFS,
     MAX_FAILURES,
     MAX_NATIVE_ALARMS,
@@ -58,6 +59,31 @@ _OPAQUE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,127}$")
 _PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 _LOCAL_TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 _ENTITY_ID_RE = re.compile(r"^[a-z_][a-z0-9_]*\.[a-z0-9_]+$")
+_ALARM_LINK_KEY_RE = re.compile(
+    r"^(?P<source_ref>[a-z0-9_]+:[a-z0-9_]+)#(?P<weekday>[a-z]+)#(?P<local_time>(?:[01]\d|2[0-3]):[0-5]\d)$"
+)
+
+
+def alarm_link_key(source_ref: str, weekday: str, local_time: str) -> str:
+    """Return the stable per-source-alarm wake-light link key.
+
+    The key is derived from the source side, the execution weekday and the local
+    wake time so both Home Assistant and the dashboard can compute it without a
+    source-owned row identifier.
+    """
+    return f"{source_ref}#{weekday}#{local_time}"
+
+
+def parse_alarm_link_key(value: str) -> tuple[str, str, str]:
+    """Split one link key, raising ValueError when malformed."""
+    match = _ALARM_LINK_KEY_RE.fullmatch(value)
+    if match is None or match.group("weekday") not in WEEKDAYS:
+        raise ValueError("invalid_alarm_link_key")
+    return (
+        match.group("source_ref"),
+        match.group("weekday"),
+        match.group("local_time"),
+    )
 
 
 def utc_now() -> datetime:
@@ -1086,7 +1112,7 @@ class ProfileState:
     revision: int
     defaults: WakeLightDefaults
     alarms: tuple[WakeLightAlarm, ...] = ()
-    source_bindings: Mapping[str, bool] = field(default_factory=dict)
+    alarm_links: Mapping[str, bool] = field(default_factory=dict)
     source_cache: Mapping[str, SourceSnapshot] = field(default_factory=dict)
     active_run: ActiveRun | None = None
     last_outcome: str | None = None
@@ -1106,7 +1132,7 @@ class ProfileState:
             profile_id=profile.profile_id,
             revision=0,
             defaults=profile.defaults,
-            source_bindings={source_ref: False for source_ref in profile.source_refs},
+            alarm_links={},
             source_cache={
                 source_ref: SourceSnapshot() for source_ref in profile.source_refs
             },
@@ -1230,12 +1256,58 @@ class ProfileState:
             auto_relight_blocked_from=None,
         )
 
+    def alarm_link_enabled(
+        self,
+        source_ref: str,
+        weekday: str,
+        local_time: str,
+    ) -> bool:
+        """Return whether one source alarm day drives this wake light.
+
+        Links default to enabled; only explicit opt-outs are persisted.
+        """
+        key = alarm_link_key(source_ref, weekday, local_time)
+        return self.alarm_links.get(key) is not False
+
+    def linked_weekdays(self, alarm: WakeLightAlarm) -> tuple[str, ...]:
+        """Return the weekdays of one source alarm that remain linked."""
+        if (
+            alarm.source == ALARM_SOURCE_NATIVE
+            or not alarm.source_ref
+            or alarm.kind != ALARM_KIND_WEEKLY
+        ):
+            return alarm.weekdays
+        return tuple(
+            day
+            for day in alarm.weekdays
+            if self.alarm_link_enabled(alarm.source_ref, day, alarm.local_time)
+        )
+
+    def source_alarm_linked(self, alarm: WakeLightAlarm) -> bool:
+        """Return whether one alarm still drives this wake light at all."""
+        if alarm.source == ALARM_SOURCE_NATIVE or not alarm.source_ref:
+            return True
+        if alarm.kind == ALARM_KIND_WEEKLY:
+            return bool(self.linked_weekdays(alarm))
+        if alarm.date is None:
+            return True
+        weekday = WEEKDAYS[(date.fromisoformat(alarm.date).weekday() + 1) % 7]
+        return self.alarm_link_enabled(alarm.source_ref, weekday, alarm.local_time)
+
+    def has_linked_alarms(self, source_ref: str) -> bool:
+        """Return whether any cached alarm of one source still drives this light."""
+        snapshot = self.source_cache.get(source_ref)
+        if snapshot is None:
+            return False
+        return any(
+            alarm.enabled and self.source_alarm_linked(alarm)
+            for alarm in snapshot.alarms
+        )
+
     def public_alarms(self) -> tuple[WakeLightAlarm, ...]:
-        """Return native plus bound read-only source alarms."""
+        """Return native plus read-only source alarms."""
         alarms = list(self.alarms)
-        for source_ref, enabled in self.source_bindings.items():
-            if not enabled:
-                continue
+        for source_ref in self.source_cache:
             alarms.extend(
                 replace(alarm, ramp_minutes=self.defaults.ramp_minutes)
                 for alarm in self.source_cache.get(source_ref, SourceSnapshot()).alarms
@@ -1259,7 +1331,7 @@ class ProfileState:
             "revision": self.revision,
             "defaults": self.defaults.to_dict(),
             "alarms": [alarm.to_dict() for alarm in self.alarms],
-            "source_bindings": dict(self.source_bindings),
+            "alarm_links": dict(self.alarm_links),
             "source_cache": {
                 key: value.to_dict() for key, value in self.source_cache.items()
             },
@@ -1312,11 +1384,20 @@ class ProfileState:
                     continue
                 alarms.append(alarm)
 
-        bindings = {source_ref: False for source_ref in profile.source_refs}
-        raw_bindings = value.get("source_bindings")
-        if isinstance(raw_bindings, Mapping):
-            for source_ref in bindings:
-                bindings[source_ref] = raw_bindings.get(source_ref) is True
+        links: dict[str, bool] = {}
+        raw_links = value.get("alarm_links")
+        if isinstance(raw_links, Mapping):
+            for key, enabled in raw_links.items():
+                if len(links) >= MAX_ALARM_LINKS:
+                    break
+                if not isinstance(key, str) or enabled is not False:
+                    continue
+                try:
+                    source_ref, _weekday, _local_time = parse_alarm_link_key(key)
+                except ValueError:
+                    continue
+                if source_ref in profile.source_refs:
+                    links[key] = False
 
         source_cache = {
             source_ref: SourceSnapshot() for source_ref in profile.source_refs
@@ -1386,7 +1467,7 @@ class ProfileState:
             revision=max(0, int(value.get("revision", 0))),
             defaults=defaults,
             alarms=tuple(alarms),
-            source_bindings=bindings,
+            alarm_links=links,
             source_cache=source_cache,
             active_run=active_run,
             last_outcome=(

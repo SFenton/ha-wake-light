@@ -10,6 +10,7 @@ import math
 
 from .const import (
     ALARM_KIND_ONCE,
+    ALARM_SOURCE_NATIVE,
     ALARM_SOURCE_SLEEPYPOD,
     DEFAULT_MISSED_ALARM_CATCHUP_SECONDS,
     MAX_CANCELLATION_OCCURRENCE_REFS,
@@ -269,8 +270,32 @@ def stale_once_alarm_ids(
 
 
 def runnable_alarms(state: ProfileState) -> tuple[WakeLightAlarm, ...]:
-    """Return native and enabled bound source records."""
-    return tuple(alarm for alarm in state.public_alarms() if alarm.enabled)
+    """Return native and enabled source records, trimmed to linked weekdays."""
+    runnable: list[WakeLightAlarm] = []
+    for alarm in state.public_alarms():
+        if not alarm.enabled:
+            continue
+        if alarm.source == ALARM_SOURCE_NATIVE:
+            runnable.append(alarm)
+            continue
+        if not state.source_alarm_linked(alarm):
+            continue
+        linked = state.linked_weekdays(alarm)
+        if linked == alarm.weekdays:
+            runnable.append(alarm)
+            continue
+        runnable.append(
+            replace(
+                alarm,
+                weekdays=linked,
+                source_schedule_ids={
+                    day: schedule_id
+                    for day, schedule_id in alarm.source_schedule_ids.items()
+                    if day in linked
+                },
+            )
+        )
+    return tuple(runnable)
 
 
 def day_offset(day: str, offset: int) -> str:

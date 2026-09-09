@@ -292,7 +292,7 @@ editable field changes, and disables again when every edit is reverted.
 | Add or edit native alarm | Modal command | `upsert_alarm` | Insert or replace the draft alarm | Backend rejects stale profile/alarm revisions and source-owned records |
 | Delete native alarm | Destructive command | `delete_alarm` | Remove the selected alarm | Backend returns `not_found` or a revision conflict without mutation |
 | Ramp default | Radio selection | `update_defaults` | Show the selected 0, 5, 10, 15, or 30-minute duration | Backend rejects unsupported new values; hold remains fixed at five minutes |
-| SleepyPod room-light link | Toggle | `bind_source` | Show requested binding | Backend accepts only configured source sides |
+| Individual SleepyPod alarm wake-light link | Toggle | `link_alarm` | Show requested per-alarm link state | Backend accepts only configured source sides and validated alarm-link keys |
 | Stop wake-light episode | Command | `end_episode` | Retain live state until HA confirms the stop | Ends the connected episode, preserves asleep PBL, and blocks auto-relight through the episode end |
 | Summary unavailable | Modal/state | None until available | None | Modal remains a useful setup/status entry point |
 
@@ -319,7 +319,7 @@ Its attributes are exactly:
 
 ```yaml
 available: true
-contract_version: 3
+contract_version: 4
 command_available: true
 profile_id: master-bedroom
 revision: 4
