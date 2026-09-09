@@ -66,8 +66,14 @@ For each room, configure only the intended wake-light leaves, the matching PBL s
   weekly records keep a per-day `source_schedule_ids` mapping, including
   separate slots for same-time duplicates. Missing or duplicate identities
   fail closed for new source execution rather than enabling side-wide guessing.
-- Source-bound alarms are read-only. Wake Light never publishes or writes a
-  SleepyPod schedule.
+- Source-bound alarms are read-only. Wake Light never edits a SleepyPod alarm
+  that it did not create.
+- A native dated one-time alarm may include `bed_sides` (`left` and/or
+  `right`). Home Assistant then creates a temporary matching SleepyPod alarm
+  only when that side/day/time has no existing alarm, records the exact
+  provider identity, and removes only that newly created alarm ten minutes
+  after the dated wake time. Ambiguous identity or unavailable schedule data
+  fails closed and retries without deleting unrelated alarms.
 
 ## Execution and ownership
 

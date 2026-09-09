@@ -81,6 +81,7 @@ _OPERATION_FIELDS = {
     OP_END_EPISODE: {"episode_ref"},
 }
 _ALARM_FIELDS = {
+    "bed_sides",
     "date",
     "enabled",
     "id",

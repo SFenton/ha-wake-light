@@ -328,4 +328,4 @@ class WakeLightRuntimeV2Tests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(model.state, "degraded")
         self.assertIn("source_unavailable", model.attributes["failures"])
         self.assertEqual(model.attributes["current_blockers"], [])
-        self.assertEqual(model.attributes["contract_version"], 4)
+        self.assertEqual(model.attributes["contract_version"], 5)

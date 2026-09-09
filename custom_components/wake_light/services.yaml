@@ -2,7 +2,8 @@ command:
   name: Command
   description: >
     Apply one idempotent expected-revision command to a Wake Light room
-    profile. Source-bound SleepyPod alarms are read-only.
+    profile. Source-bound SleepyPod alarms are read-only; native one-time
+    alarms may request HA-owned temporary bed alarms through bed_sides.
   fields:
     profile_id:
       name: Profile ID
@@ -37,7 +38,9 @@ command:
             - end_episode
     alarm:
       name: Alarm
-      description: Native alarm object for upsert_alarm.
+      description: >
+        Native alarm object for upsert_alarm. Contract 5 accepts bed_sides on
+        dated one-time alarms and owns temporary SleepyPod cleanup.
       required: false
       selector:
         object: {}
