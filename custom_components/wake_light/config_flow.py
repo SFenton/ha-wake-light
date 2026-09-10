@@ -31,6 +31,7 @@ from .const import (
     DEFAULT_RAMP_MINUTES,
     DEFAULT_SLEEPYPOD_SCHEDULE_SET_TOPIC,
     DOMAIN,
+    POST_WAKE_HOLD_MINUTE_OPTIONS,
     RAMP_MINUTE_OPTIONS,
     SOURCE_SIDE_LEFT,
     SOURCE_SIDE_RIGHT,
@@ -69,6 +70,17 @@ def _allowed_ramp_minutes(defaults: Mapping[str, Any]) -> tuple[int, ...]:
     except (TypeError, ValueError):
         return RAMP_MINUTE_OPTIONS
     if 0 <= current <= 60 and current not in values:
+        values.append(current)
+    return tuple(values)
+
+
+def _allowed_hold_minutes(defaults: Mapping[str, Any]) -> tuple[int, ...]:
+    values = list(POST_WAKE_HOLD_MINUTE_OPTIONS)
+    try:
+        current = int(defaults.get(CONF_DEFAULT_POST_WAKE_HOLD_MINUTES))
+    except (TypeError, ValueError):
+        return POST_WAKE_HOLD_MINUTE_OPTIONS
+    if 5 <= current <= 30 and current not in values:
         values.append(current)
     return tuple(values)
 
@@ -185,11 +197,14 @@ def _profile_schema(
     fields[
         vol.Required(
             CONF_DEFAULT_POST_WAKE_HOLD_MINUTES,
-            default=DEFAULT_POST_WAKE_HOLD_MINUTES,
+            default=defaults.get(
+                CONF_DEFAULT_POST_WAKE_HOLD_MINUTES,
+                DEFAULT_POST_WAKE_HOLD_MINUTES,
+            ),
         )
     ] = vol.All(
         vol.Coerce(int),
-        vol.In([DEFAULT_POST_WAKE_HOLD_MINUTES]),
+        vol.In(_allowed_hold_minutes(defaults)),
     )
     fields[
         vol.Required(
@@ -207,7 +222,7 @@ class WakeLightConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Create one config entry per room profile."""
 
     VERSION = 1
-    MINOR_VERSION = 2
+    MINOR_VERSION = 3
 
     async def async_step_user(
         self,

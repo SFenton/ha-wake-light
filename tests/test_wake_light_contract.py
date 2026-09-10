@@ -75,6 +75,16 @@ def upsert_command(request_id: str = "request-1") -> dict:
 
 
 class WakeLightContractTests(unittest.TestCase):
+    def test_post_wake_hold_accepts_product_choices_and_rejects_out_of_range_values(self) -> None:
+        self.assertEqual(
+            WakeLightDefaults.from_dict({"post_wake_hold_minutes": 30}).post_wake_hold_minutes,
+            30,
+        )
+        with self.assertRaisesRegex(ValueError, "invalid_post_wake_hold_minutes"):
+            WakeLightDefaults.from_dict({"post_wake_hold_minutes": 0})
+        with self.assertRaisesRegex(ValueError, "invalid_post_wake_hold_minutes"):
+            WakeLightDefaults.from_dict({"post_wake_hold_minutes": 31})
+
     def test_revision_and_request_id_idempotency(self) -> None:
         wake_profile = profile()
         initial = ProfileState.initial(wake_profile)

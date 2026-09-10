@@ -97,7 +97,7 @@ class WakeLightSourceContractTests(unittest.TestCase):
         self.assertEqual(len(unsupported_episode_ids(windows, now)), 4)
         run = start_run(profile, (windows[0],), now=now, observed_floor_pct=1)
         self.assertEqual((connected_episode(run, windows, now=now).end_at - now).total_seconds(), 7500)
-        self.assertEqual(fixed_lease_ttl_seconds(), 6300)
+        self.assertEqual(fixed_lease_ttl_seconds(), 7200)
         state = replace(ProfileState.initial(profile), alarms=alarms[:3])
         decision = apply_command(state, profile, {
             "profile_id": profile.profile_id, "expected_revision": 0, "request_id": "long",
@@ -328,4 +328,22 @@ class WakeLightRuntimeV2Tests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(model.state, "degraded")
         self.assertIn("source_unavailable", model.attributes["failures"])
         self.assertEqual(model.attributes["current_blockers"], [])
-        self.assertEqual(model.attributes["contract_version"], 5)
+        self.assertEqual(model.attributes["contract_version"], 6)
+# @covers home-assistant/custom_components/wake_light/__init__.py
+# @covers home-assistant/custom_components/wake_light/bed_schedule.py
+# @covers home-assistant/custom_components/wake_light/commands.py
+# @covers home-assistant/custom_components/wake_light/config_flow.py
+# @covers home-assistant/custom_components/wake_light/const.py
+# @covers home-assistant/custom_components/wake_light/coordinator.py
+# @covers home-assistant/custom_components/wake_light/engine.py
+# @covers home-assistant/custom_components/wake_light/manifest.json
+# @covers home-assistant/custom_components/wake_light/model.py
+# @covers home-assistant/custom_components/wake_light/read_model.py
+# @covers home-assistant/custom_components/wake_light/scheduler.py
+# @covers home-assistant/custom_components/wake_light/sensor.py
+# @covers home-assistant/custom_components/wake_light/service.py
+# @covers home-assistant/custom_components/wake_light/services.yaml
+# @covers home-assistant/custom_components/wake_light/store.py
+# @covers home-assistant/custom_components/wake_light/strings.json
+# @covers home-assistant/custom_components/wake_light/translations/en.json
+# @covers home-assistant/tests/fixtures/sleepypod-alarm-v2.json

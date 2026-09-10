@@ -113,8 +113,10 @@ from wake_light import coordinator as coordinator_module  # noqa: E402
 from homeassistant.core import CoreState  # noqa: E402
 from wake_light.const import (  # noqa: E402
     FAILURE_MANUAL_REVOKE,
+    FAILURE_PBL_ACQUIRE,
     FAILURE_VACATION_BLOCKED,
 )
+from wake_light.commands import CommandEffect  # noqa: E402
 from wake_light.coordinator import WakeLightCoordinator  # noqa: E402
 from wake_light.model import (  # noqa: E402
     ProfileState,
@@ -148,6 +150,7 @@ class _Services:
         self._lease_expires_at = None
         self.deny_next_acquire = False
         self.next_dispatch_response = None
+        self.on_mqtt_publish = None
 
     async def async_call(
         self,
@@ -159,6 +162,8 @@ class _Services:
         return_response=False,
     ):
         self.calls.append((domain, service, data))
+        if domain == "mqtt" and service == "publish" and self.on_mqtt_publish:
+            self.on_mqtt_publish()
         if domain == "presence_based_lighting" and service == "acquire_control":
             if self.deny_next_acquire:
                 self.deny_next_acquire = False
@@ -389,6 +394,159 @@ class WakeLightRuntimeStubTests(unittest.IsolatedAsyncioTestCase):
         removed = json.loads(mqtt_calls[-1][2]["payload"])
         self.assertEqual(removed["right"]["tuesday"]["alarms"], [])
         self.assertEqual(coordinator.state.temporary_bed_alarms, ())
+
+    async def test_invalid_bed_alarm_update_does_not_remove_existing_schedule(
+        self,
+    ) -> None:
+        now = datetime(2030, 1, 1, 6, 0, tzinfo=UTC)
+        schedule_entity = "sensor.sleepypod_schedules"
+        wake_profile = replace(
+            _profile(),
+            sleepypod_schedule_entity_id=schedule_entity,
+            sleepypod_source_sides=("left", "right"),
+        )
+        schedule = {
+            side: {
+                day: {"alarms": []}
+                for day in (
+                    "sunday", "monday", "tuesday", "wednesday",
+                    "thursday", "friday", "saturday",
+                )
+            }
+            for side in ("left", "right")
+        }
+        values = _states(wake_profile)
+        values[schedule_entity] = _State("ready", schedule)
+        hass = _Hass(values, lambda: now)
+        coordinator = WakeLightCoordinator(hass, _Entry(), wake_profile)
+        coordinator_module.utc_now = lambda: now
+        wake = now + timedelta(hours=1)
+        alarm = {
+            "id": "nap",
+            "label": "Nap",
+            "kind": "once",
+            "date": wake.date().isoformat(),
+            "local_time": wake.strftime("%H:%M"),
+            "ramp_minutes": 30,
+            "revision": 0,
+            "enabled": True,
+            "source": "native",
+            "weekdays": [],
+            "bed_sides": ["right"],
+        }
+
+        await coordinator.async_handle_command({
+            "profile_id": wake_profile.profile_id,
+            "expected_revision": 0,
+            "request_id": "nap-create",
+            "operation": "upsert_alarm",
+            "alarm": alarm,
+        })
+        calls_before_update = len([
+            call for call in hass.services.calls
+            if call[:2] == ("mqtt", "publish")
+        ])
+
+        response = await coordinator.async_handle_command({
+            "profile_id": wake_profile.profile_id,
+            "expected_revision": 1,
+            "request_id": "nap-invalid-update",
+            "operation": "upsert_alarm",
+            "alarm": {
+                **alarm,
+                "revision": 1,
+                "bed_sides": ["unconfigured"],
+            },
+        })
+
+        self.assertEqual(response["outcome"], "invalid_request")
+        self.assertEqual(response["error"], "invalid_bed_sides")
+        self.assertEqual(coordinator.state.revision, 1)
+        self.assertEqual(coordinator.state.alarms[0].bed_sides, ("right",))
+        self.assertEqual(len(coordinator.state.temporary_bed_alarms), 1)
+        self.assertEqual(
+            len([
+                call for call in hass.services.calls
+                if call[:2] == ("mqtt", "publish")
+            ]),
+            calls_before_update,
+        )
+
+    async def test_bed_alarm_update_uses_validated_schedule_snapshot(
+        self,
+    ) -> None:
+        now = datetime(2030, 1, 1, 6, 0, tzinfo=UTC)
+        schedule_entity = "sensor.sleepypod_schedules"
+        wake_profile = replace(
+            _profile(),
+            sleepypod_schedule_entity_id=schedule_entity,
+            sleepypod_source_sides=("left", "right"),
+        )
+        schedule = {
+            side: {
+                day: {"alarms": []}
+                for day in (
+                    "sunday", "monday", "tuesday", "wednesday",
+                    "thursday", "friday", "saturday",
+                )
+            }
+            for side in ("left", "right")
+        }
+        values = _states(wake_profile)
+        values[schedule_entity] = _State("ready", schedule)
+        hass = _Hass(values, lambda: now)
+        coordinator = WakeLightCoordinator(hass, _Entry(), wake_profile)
+        coordinator_module.utc_now = lambda: now
+        wake = now + timedelta(hours=1)
+        alarm = {
+            "id": "nap",
+            "label": "Nap",
+            "kind": "once",
+            "date": wake.date().isoformat(),
+            "local_time": wake.strftime("%H:%M"),
+            "ramp_minutes": 30,
+            "revision": 0,
+            "enabled": True,
+            "source": "native",
+            "weekdays": [],
+            "bed_sides": ["right"],
+        }
+
+        await coordinator.async_handle_command({
+            "profile_id": wake_profile.profile_id,
+            "expected_revision": 0,
+            "request_id": "nap-create",
+            "operation": "upsert_alarm",
+            "alarm": alarm,
+        })
+        created = json.loads(hass.services.calls[-1][2]["payload"])
+        created["right"]["tuesday"]["alarms"][0]["id"] = 52
+        values[schedule_entity] = _State("ready", created)
+        coordinator._refresh_source_cache_locked(now + timedelta(seconds=1))
+
+        def make_schedule_unavailable() -> None:
+            values[schedule_entity] = _State("unavailable")
+            hass.services.on_mqtt_publish = None
+
+        hass.services.on_mqtt_publish = make_schedule_unavailable
+        response = await coordinator.async_handle_command({
+            "profile_id": wake_profile.profile_id,
+            "expected_revision": 1,
+            "request_id": "nap-update",
+            "operation": "upsert_alarm",
+            "alarm": {
+                **alarm,
+                "local_time": "07:30",
+                "revision": 1,
+            },
+        })
+
+        self.assertEqual(response["outcome"], "accepted")
+        self.assertEqual(coordinator.state.alarms[0].local_time, "07:30")
+        self.assertEqual(len(coordinator.state.temporary_bed_alarms), 1)
+        replaced = json.loads(hass.services.calls[-1][2]["payload"])
+        alarms = replaced["right"]["tuesday"]["alarms"]
+        self.assertEqual([item["time"] for item in alarms], ["07:30"])
 
     async def test_dispatches_only_through_pbl_and_releases_after_hold(self) -> None:
         coordinator, hass, clock = await self._coordinator()
@@ -1025,6 +1183,27 @@ class WakeLightRuntimeStubTests(unittest.IsolatedAsyncioTestCase):
         assert active is not None
         self.assertEqual(active.generation, 2)
         self.assertEqual(len(active.occurrences), 2)
+
+    async def test_command_lease_update_failure_cancels_the_active_run(
+        self,
+    ) -> None:
+        coordinator, hass, clock = await self._coordinator()
+        async with coordinator._lock:
+            await coordinator._reconcile_locked(clock[0], "test-start")
+        self.assertIsNotNone(coordinator.state.active_run)
+
+        hass.services.deny_next_acquire = True
+        async with coordinator._lock:
+            await coordinator._apply_command_effect_locked(
+                CommandEffect("update_lease"),
+                clock[0],
+            )
+
+        self.assertIsNone(coordinator.state.active_run)
+        self.assertEqual(
+            coordinator.state.failures[-1].code,
+            FAILURE_PBL_ACQUIRE,
+        )
 
     async def test_manual_off_boundaries_fence_the_connected_alarm_chain(
         self,

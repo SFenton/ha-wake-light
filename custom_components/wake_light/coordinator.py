@@ -242,11 +242,7 @@ class WakeLightCoordinator(DataUpdateCoordinator[SensorReadModel]):
             if operation == "update_defaults":
                 self._refresh_source_cache_locked(command_now)
             if changed and operation in {"upsert_alarm", "delete_alarm"}:
-                alarm_id = previous_alarm.id if previous_alarm is not None else None
-                if alarm_id is not None:
-                    await self._cleanup_temporary_bed_alarms_locked(
-                        command_now, alarm_id=alarm_id, force=True,
-                    )
+                current_alarm = None
                 if operation == "upsert_alarm":
                     current_alarm = next(
                         (
@@ -258,8 +254,8 @@ class WakeLightCoordinator(DataUpdateCoordinator[SensorReadModel]):
                     )
                     if current_alarm is not None:
                         try:
-                            await self._provision_temporary_bed_alarms_locked(
-                                current_alarm, command_now,
+                            self._validate_temporary_bed_alarm_locked(
+                                current_alarm
                             )
                         except ValueError as err:
                             self.state = previous_state
@@ -268,6 +264,22 @@ class WakeLightCoordinator(DataUpdateCoordinator[SensorReadModel]):
                                 "outcome": "invalid_request",
                                 "error": str(err),
                             }
+                alarm_id = previous_alarm.id if previous_alarm is not None else None
+                bed_schedule_attributes = self._bed_schedule_attributes_locked()
+                if alarm_id is not None:
+                    _, bed_schedule_attributes = (
+                        await self._cleanup_temporary_bed_alarms_from_attributes_locked(
+                            command_now,
+                            alarm_id=alarm_id,
+                            force=True,
+                            attributes=bed_schedule_attributes,
+                        )
+                    )
+                if current_alarm is not None:
+                    await self._provision_temporary_bed_alarms_locked(
+                        current_alarm, command_now,
+                        attributes=bed_schedule_attributes,
+                    )
             if decision.effect is not None:
                 await self._apply_command_effect_locked(
                     decision.effect,
@@ -660,13 +672,18 @@ class WakeLightCoordinator(DataUpdateCoordinator[SensorReadModel]):
         )
 
     async def _provision_temporary_bed_alarms_locked(
-        self, alarm: WakeLightAlarm, now: datetime,
+        self,
+        alarm: WakeLightAlarm,
+        now: datetime,
+        *,
+        attributes: Mapping[str, Any] | None = None,
     ) -> None:
         if not alarm.enabled or not alarm.bed_sides or alarm.date is None:
             return
-        attributes = self._bed_schedule_attributes_locked()
         if attributes is None:
-            raise ValueError("bed_schedule_unavailable")
+            self._validate_temporary_bed_alarm_locked(alarm)
+            attributes = self._bed_schedule_attributes_locked()
+        assert attributes is not None
         weekday = execution_weekday(alarm.date)
         wake_at = resolve_wall_datetime(
             date.fromisoformat(alarm.date), alarm.local_time, self._timezone,
@@ -674,11 +691,6 @@ class WakeLightCoordinator(DataUpdateCoordinator[SensorReadModel]):
         cleanup_at = wake_at + timedelta(
             seconds=TEMPORARY_BED_ALARM_CLEANUP_GRACE_SECONDS
         )
-        if any(
-            side not in self.profile.sleepypod_source_sides
-            for side in alarm.bed_sides
-        ):
-            raise ValueError("bed_side_unavailable")
         records = list(self.state.temporary_bed_alarms)
         for side in alarm.bed_sides:
             payload, baseline_ids = add_temporary_alarm_payload(
@@ -702,6 +714,19 @@ class WakeLightCoordinator(DataUpdateCoordinator[SensorReadModel]):
             await self.store.async_save(self.state)
             await self._publish_bed_schedule_locked(payload)
 
+    def _validate_temporary_bed_alarm_locked(
+        self, alarm: WakeLightAlarm,
+    ) -> None:
+        if not alarm.enabled or not alarm.bed_sides or alarm.date is None:
+            return
+        if self._bed_schedule_attributes_locked() is None:
+            raise ValueError("bed_schedule_unavailable")
+        if any(
+            side not in self.profile.sleepypod_source_sides
+            for side in alarm.bed_sides
+        ):
+            raise ValueError("bed_side_unavailable")
+
     async def _cleanup_temporary_bed_alarms_locked(
         self,
         now: datetime,
@@ -709,10 +734,25 @@ class WakeLightCoordinator(DataUpdateCoordinator[SensorReadModel]):
         alarm_id: str | None = None,
         force: bool = False,
     ) -> bool:
+        cleaned, _ = await self._cleanup_temporary_bed_alarms_from_attributes_locked(
+            now,
+            alarm_id=alarm_id,
+            force=force,
+            attributes=self._bed_schedule_attributes_locked(),
+        )
+        return cleaned
+
+    async def _cleanup_temporary_bed_alarms_from_attributes_locked(
+        self,
+        now: datetime,
+        *,
+        alarm_id: str | None,
+        force: bool,
+        attributes: Mapping[str, Any] | None,
+    ) -> tuple[bool, Mapping[str, Any] | None]:
         records = list(self.state.temporary_bed_alarms)
         if not records:
-            return True
-        attributes = self._bed_schedule_attributes_locked()
+            return True, attributes
         changed = False
         retained: list[TemporaryBedAlarm] = []
         for record in records:
@@ -744,14 +784,16 @@ class WakeLightCoordinator(DataUpdateCoordinator[SensorReadModel]):
                 continue
             if payload is not None:
                 await self._publish_bed_schedule_locked(payload)
+                attributes = payload
             changed = True
         if changed:
             self.state = replace(
                 self.state, temporary_bed_alarms=tuple(retained)
             )
-        return not any(
+        cleaned = not any(
             record.alarm_id == alarm_id for record in retained
         ) if alarm_id is not None else True
+        return cleaned, attributes
 
     async def _handle_source_lifecycle_locked(
         self,
@@ -888,7 +930,14 @@ class WakeLightCoordinator(DataUpdateCoordinator[SensorReadModel]):
                 cause=PBL_RELEASE_CAUSE_OCCURRENCE_CANCELLED,
             )
         elif effect.kind == "update_lease" and self.state.active_run is not None:
-            await self._acquire_locked(self.state.active_run, recovery=False)
+            if not await self._acquire_locked(
+                self.state.active_run, recovery=False
+            ):
+                await self._cancel_active_locked(
+                    FAILURE_PBL_ACQUIRE,
+                    revoked=False,
+                    turn_off_owned=False,
+                )
         elif effect.kind == "end_episode" and effect.previous_run is not None:
             await self._end_episode_locked(effect.previous_run, now)
 
